@@ -2,7 +2,7 @@
 
 **An interactive puzzle game that teaches how Large Language Models actually work — no AI APIs, no cloud costs, pure Python.**
 
-Built for [Arqiva Live 2025](https://www.arqiva.com) as a live competitive learning experience. Players race through 5 stages, each revealing a core concept behind modern AI, while competing on a shared real-time leaderboard.
+Built for [Arqiva Live 2026](https://www.arqiva.com) as a live competitive learning experience. Players race through 5 stages, each revealing a core concept behind modern AI, while competing on a shared real-time leaderboard.
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.35%2B-red?style=flat-square)
