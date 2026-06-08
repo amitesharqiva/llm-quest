@@ -17,20 +17,20 @@ page  = st.session_state.get("page", "home")
 stage = st.session_state.get("stage", 1)
 
 if page == "home":
-    from pages.home import render; render()
+    from game_pages.home import render; render()
 
 elif page == "game":
     render_sidebar()
-    if   stage == 1: from pages.stage1_tokens       import render; render()
-    elif stage == 2: from pages.stage2_prediction   import render; render()
-    elif stage == 3: from pages.stage3_temperature  import render; render()
-    elif stage == 4: from pages.stage4_context      import render; render()
-    elif stage == 5: from pages.stage5_hallucination import render; render()
-    elif stage == 6: from pages.stage6_ai_concepts  import render; render()
-    elif stage == 7: from pages.stage7_arqiva_usecases import render; render()
-    elif stage == 8: from pages.stage8_ai_safety    import render; render()
-    elif stage >= 9: from pages.finish              import render; render()
+    if   stage == 1: from game_pages.stage1_tokens       import render; render()
+    elif stage == 2: from game_pages.stage2_prediction   import render; render()
+    elif stage == 3: from game_pages.stage3_temperature  import render; render()
+    elif stage == 4: from game_pages.stage4_context      import render; render()
+    elif stage == 5: from game_pages.stage5_hallucination import render; render()
+    elif stage == 6: from game_pages.stage6_ai_concepts  import render; render()
+    elif stage == 7: from game_pages.stage7_arqiva_usecases import render; render()
+    elif stage == 8: from game_pages.stage8_ai_safety    import render; render()
+    elif stage >= 9: from game_pages.finish              import render; render()
 
 elif page == "leaderboard":
     render_sidebar()
-    from pages.leaderboard import render; render()
+    from game_pages.leaderboard import render; render()
