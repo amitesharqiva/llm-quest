@@ -21,6 +21,12 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;color:#1a1f2e;}
   font-size:0.9rem !important;padding:0.55rem 1.4rem !important;transition:all 0.18s !important;
   box-shadow:0 1px 4px rgba(228,0,43,0.3) !important;}
 .stButton>button:hover{background:#B8001F !important;transform:translateY(-1px) !important;}
+/* Back button — secondary style */
+div[data-testid="column"]:first-child .stButton>button {
+    background:#EEF1F8 !important;color:#1a2f5e !important;
+    border:1.5px solid #C5CCE0 !important;box-shadow:none !important;}
+div[data-testid="column"]:first-child .stButton>button:hover {
+    background:#C5CCE0 !important;}
 .stTextInput>div>div>input{background:white !important;border:1.5px solid #CBD2E0 !important;
   border-radius:8px !important;color:#1a1f2e !important;font-family:'DM Sans',sans-serif !important;}
 .stTextInput>div>div>input:focus{border-color:#E4002B !important;box-shadow:0 0 0 3px rgba(228,0,43,0.1) !important;}
@@ -294,9 +300,10 @@ def init_state():
         if k not in st.session_state:
             st.session_state[k] = v
 
-def setup_question_banks():
-    """Shuffle and pick questions for each stage — called once at game start."""
-    if not st.session_state.get("q_bank_1"):
+def setup_question_banks(force=False):
+    """Shuffle and pick questions. force=True always resamples."""
+    if force or not st.session_state.get("q_bank_1"):
+        random.seed()
         c = random.sample(BANK_CONCEPTS, min(QS_PER_STAGE, len(BANK_CONCEPTS)))
         a = random.sample(BANK_ARQIVA,   min(QS_PER_STAGE, len(BANK_ARQIVA)))
         s = random.sample(BANK_SAFETY,   min(QS_PER_STAGE, len(BANK_SAFETY)))
@@ -325,36 +332,49 @@ def end_stage(n):
 # ── LEADERBOARD ───────────────────────────────────────────────────────────────
 LB_FILE = "/tmp/arqiva_quest_2026.json"
 
+@st.cache_resource
+def _get_store():
+    """
+    Shared in-memory leaderboard — one instance across ALL concurrent sessions.
+    Loaded from disk on first call so data survives app restarts.
+    st.cache_resource is thread-safe for concurrent users.
+    """
+    data = {"board": []}
+    try:
+        if os.path.exists(LB_FILE):
+            data["board"] = json.loads(open(LB_FILE).read())
+    except Exception:
+        pass
+    return data
+
+def _flush(board):
+    try:
+        open(LB_FILE, "w").write(json.dumps(board))
+    except Exception:
+        pass
+
 def lb_save():
     name  = st.session_state.get("player_name", "?")
     score = total_score()
     t     = int(time.time() - (st.session_state.get("start_time") or time.time()))
     done  = sum(1 for v in st.session_state.get("stage_complete", {}).values() if v)
-    try:
-        board = json.loads(open(LB_FILE).read()) if os.path.exists(LB_FILE) else []
-    except Exception:
-        board = []
-    ex = next((e for e in board if e["name"] == name), None)
+    team  = st.session_state.get("player_team", "")
+    store = _get_store()
+    board = store["board"]
+    ex = next((e for e in board if e["name"].lower() == name.lower()), None)
     if ex:
-        if score > ex["score"]:
-            ex.update({"score": score, "time": t, "stages": done,
-                       "team": st.session_state.get("player_team", "")})
+        ex["plays"] = ex.get("plays", 1) + 1
+        if score >= ex["score"]:
+            ex.update({"score": score, "time": t, "stages": done, "team": team})
     else:
-        board.append({"name": name, "team": st.session_state.get("player_team", ""),
-                      "score": score, "time": t, "stages": done})
+        board.append({"name": name, "team": team, "score": score,
+                      "time": t, "stages": done, "plays": 1})
     board.sort(key=lambda x: (-x["score"], x["time"]))
-    try:
-        open(LB_FILE, "w").write(json.dumps(board[:30]))
-    except Exception:
-        pass
+    store["board"] = board[:50]
+    _flush(store["board"])
 
 def lb_load():
-    try:
-        if os.path.exists(LB_FILE):
-            return json.loads(open(LB_FILE).read())
-    except Exception:
-        pass
-    return []
+    return _get_store()["board"]
 
 def my_rank():
     for i, e in enumerate(lb_load()):
@@ -444,8 +464,12 @@ def sidebar():
                 </div>""", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🏠 Home", use_container_width=True):
+            st.session_state["page"] = "home"; st.rerun()
         if st.button("🏆 Leaderboard", use_container_width=True):
             st.session_state["page"] = "leaderboard"; st.rerun()
+        if st.button("🔄 Refresh Scores", use_container_width=True):
+            st.rerun()
 
 # ── SHARED UI HELPERS ─────────────────────────────────────────────────────────
 STAGE_COLORS = {
@@ -529,17 +553,31 @@ def show_feedback(stage, q_idx, explain):
     else:
         st.markdown(f"<div class='err' style='margin-top:0.8rem;'><strong>❌ Not quite.</strong><br><span style='font-weight:400;font-size:0.87rem;'>{explain}</span></div>", unsafe_allow_html=True)
 
-def next_btn(stage, idx, total, final_lbl="✅ Complete Stage"):
+def nav_btns(stage, idx, total, final_lbl="✅ Complete Stage"):
+    """Renders ← Back and → Next. Back never re-scores (proc_key guards that)."""
     st.markdown("<br>", unsafe_allow_html=True)
     is_final = (idx + 1 >= total)
-    lbl = final_lbl if is_final else "→ Next Question"
-    if st.button(lbl, key=f"s{stage}_nxt_{idx}"):
-        if is_final:
-            end_stage(stage)
-        else:
-            st.session_state[f"s{stage}_q_idx"] = idx + 1
-            st.session_state[f"s{stage}_streak"] = st.session_state.get(f"s{stage}_streak", 0)
-        st.rerun()
+    has_back = (idx > 0)
+    if has_back:
+        col_back, col_next = st.columns([1, 2])
+    else:
+        col_back = None
+        col_next = st.columns(1)[0]
+    if has_back and col_back:
+        with col_back:
+            if st.button("← Back", key=f"s{stage}_back_{idx}", use_container_width=True):
+                st.session_state[f"s{stage}_q_idx"] = idx - 1
+                st.rerun()
+    with col_next:
+        lbl = final_lbl if is_final else "→ Next Question"
+        if st.button(lbl, key=f"s{stage}_nxt_{idx}", use_container_width=True):
+            if is_final:
+                end_stage(stage)
+            else:
+                st.session_state[f"s{stage}_q_idx"] = idx + 1
+            st.rerun()
+
+next_btn = nav_btns  # alias
 
 def complete_banner(stage, msg=""):
     pts = st.session_state["scores"].get(stage, 0)
@@ -695,8 +733,9 @@ def page_home():
             </div>
         </div>
         <div style='font-family:"Syne",sans-serif;font-size:2.6rem;font-weight:800;
-                    color:white;line-height:1.1;margin:1.2rem 0 0.6rem;'>
-            Understand AI.<br><span style='color:#F5B3BF;'>Beat your colleagues.</span>
+                    color:white;line-height:1.35;margin:1.2rem 0 0.6rem;'>
+            Understand AI.<br>
+            <span style='color:#F5B3BF;display:inline-block;padding-bottom:0.25rem;'>Beat your colleagues.</span>
         </div>
         <div style='font-size:1rem;color:#8BA3CC;max-width:520px;line-height:1.7;'>
             3 stages of interactive questions teaching AI concepts, Arqiva use cases, 
@@ -725,7 +764,7 @@ def page_home():
             </div>""", unsafe_allow_html=True)
 
         st.markdown("""
-        <div style='background:#1a2f5e;border-radius:12px;padding:1rem 1.2rem;margin-top:0.5rem;'>
+        <div style='background:#1a2f5e;border-radius:12px;padding:1rem 1.2rem;margin-top:0.5rem;margin-bottom:1rem;'>
             <div style='font-size:0.68rem;color:#8BA3CC;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.6rem;'>Scoring</div>
             <div style='font-size:0.82rem;color:white;line-height:1.9;'>
                 ⚡ Speed bonus — answer fast<br>
@@ -733,6 +772,43 @@ def page_home():
                 🏆 Live leaderboard updates in real time
             </div>
         </div>""", unsafe_allow_html=True)
+
+        # ── Live leaderboard preview on home page ──
+        home_board = lb_load()
+        st.markdown("""
+        <div style='background:white;border:1.5px solid #E2E6EF;border-radius:12px;
+                    padding:1rem 1.2rem;box-shadow:0 2px 8px rgba(26,47,94,0.05);'>
+            <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:0.8rem;'>
+                <div style='font-family:"Syne",sans-serif;font-size:0.88rem;font-weight:800;
+                            color:#1a2f5e;display:flex;align-items:center;gap:6px;'>
+                    🏆 Live Leaderboard
+                </div>
+                <div style='background:#FDE8EC;color:#E4002B;font-size:0.65rem;font-weight:700;
+                            padding:2px 9px;border-radius:20px;letter-spacing:0.06em;
+                            text-transform:uppercase;border:1px solid #F5B3BF;'>Live</div>
+            </div>
+        """, unsafe_allow_html=True)
+        if not home_board:
+            st.markdown("<div style='font-size:0.82rem;color:#8891A8;padding:0.3rem 0;'>No scores yet — be the first to finish!</div>", unsafe_allow_html=True)
+        else:
+            medals = ["🥇","🥈","🥉"]
+            for i, entry in enumerate(home_board[:5]):
+                medal = medals[i] if i < 3 else f"{i+1}."
+                team_str = f" · {entry['team']}" if entry.get('team') else ""
+                st.markdown(f"""
+                <div style='display:flex;align-items:center;justify-content:space-between;
+                            padding:5px 0;border-bottom:1px solid #F7F9FC;'>
+                    <div style='display:flex;align-items:center;gap:8px;'>
+                        <span style='font-size:1rem;min-width:1.5rem;'>{medal}</span>
+                        <div>
+                            <div style='font-size:0.82rem;font-weight:600;color:#1a2f5e;'>{entry['name']}</div>
+                            <div style='font-size:0.72rem;color:#8891A8;'>{entry.get('stages',0)}/3 stages{team_str}</div>
+                        </div>
+                    </div>
+                    <div style='font-family:"Syne",sans-serif;font-size:1.1rem;font-weight:800;
+                                color:#E4002B;'>{entry['score']}</div>
+                </div>""", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with col2:
         st.markdown("""
@@ -742,28 +818,54 @@ def page_home():
                         color:#1a2f5e;margin-bottom:1.2rem;'>Join the quest</div>
         """, unsafe_allow_html=True)
 
-        name = st.text_input("Your name", placeholder="e.g. Ami Hassan",
-                             key="name_inp", label_visibility="collapsed")
-        st.markdown("<div style='font-size:0.76rem;color:#8891A8;margin:-0.3rem 0 0.6rem;'>Enter your name to start</div>", unsafe_allow_html=True)
-        team = st.text_input("Team (optional)", placeholder="e.g. Engineering, Operations",
-                             key="team_inp", label_visibility="collapsed")
-        st.markdown("<div style='font-size:0.76rem;color:#8891A8;margin:-0.3rem 0 0.9rem;'>Optional — shows on leaderboard</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:0.78rem;font-weight:600;color:#1a2f5e;margin-bottom:4px;'>Your Name</div>", unsafe_allow_html=True)
+        name = st.text_input("Your name",
+                             placeholder="e.g. Amitesh Bhattacharya",
+                             label_visibility="collapsed")
+        st.markdown("<div style='font-size:0.72rem;color:#8891A8;margin:-0.3rem 0 0.8rem;'>This appears on the leaderboard</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:0.78rem;font-weight:600;color:#1a2f5e;margin-bottom:4px;'>Department</div>", unsafe_allow_html=True)
+        team = st.text_input("Team (optional)",
+                             placeholder="e.g. Data & Insight",
+                             label_visibility="collapsed")
+        st.markdown("<div style='font-size:0.72rem;color:#8891A8;margin:-0.3rem 0 0.9rem;'>Optional — shown alongside your score</div>", unsafe_allow_html=True)
 
         if name and len(name.strip()) >= 2:
-            if st.button("🚀  Start the Quest", use_container_width=True):
-                now = time.time()
-                # Reset all state cleanly
-                for k in list(st.session_state.keys()):
-                    del st.session_state[k]
-                init_state()
-                st.session_state.update({
-                    "player_name": name.strip(),
-                    "player_team": team.strip() if team else "",
-                    "page": "game", "stage": 1,
-                    "start_time": now, "stage_start_time": now,
-                })
-                setup_question_banks()
-                st.rerun()
+            # Check if this player has already completed the quest
+            board = lb_load()
+            already_done = next(
+                (e for e in board if e["name"].lower() == name.strip().lower() and e.get("stages", 0) >= TOTAL_STAGES),
+                None
+            )
+            if already_done:
+                st.markdown(f"""
+                <div style='background:#FDE8EC;border:1.5px solid #F5B3BF;border-left:4px solid #E4002B;
+                            border-radius:8px;padding:1rem;text-align:center;'>
+                    <div style='font-size:1.2rem;margin-bottom:4px;'>🎖️</div>
+                    <div style='font-weight:700;color:#E4002B;font-size:0.95rem;'>Quest already completed!</div>
+                    <div style='color:#4a5168;font-size:0.85rem;margin-top:4px;'>
+                        <strong>{already_done["name"]}</strong> scored <strong>{already_done["score"]} pts</strong> and finished all {TOTAL_STAGES} stages.
+                    </div>
+                    <div style='color:#8891A8;font-size:0.8rem;margin-top:6px;'>
+                        Change your name above to play again, or view the leaderboard.
+                    </div>
+                </div>""", unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("🏆 View Leaderboard", use_container_width=True):
+                    st.session_state["page"] = "leaderboard"; st.rerun()
+            else:
+                if st.button("🚀  Start the Quest", use_container_width=True):
+                    now = time.time()
+                    for k in list(st.session_state.keys()):
+                        del st.session_state[k]
+                    init_state()
+                    st.session_state.update({
+                        "player_name": name.strip(),
+                        "player_team": team.strip() if team else "",
+                        "page": "game", "stage": 1,
+                        "start_time": now, "stage_start_time": now,
+                    })
+                    setup_question_banks(force=True)
+                    st.rerun()
         else:
             st.markdown("""
             <div style='background:#F7F9FC;border:1.5px dashed #CBD2E0;border-radius:8px;
@@ -771,6 +873,21 @@ def page_home():
                 Enter your name above to begin
             </div>""", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
+
+    # Copyright footer
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='border-top:1.5px solid #E2E6EF;padding-top:1.2rem;
+                display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;'>
+        <div style='font-size:0.75rem;color:#8891A8;'>
+            © 2026 <strong style='color:#1a2f5e;'>Arqiva Ltd.</strong> All rights reserved.
+        </div>
+        <div style='text-align:right;font-size:0.75rem;color:#8891A8;line-height:1.7;'>
+            Built &amp; Designed by <strong style='color:#E4002B;'>Amitesh Bhattacharya</strong><br>
+            Contact: <strong style='color:#1a2f5e;'>Data &amp; Insight</strong>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ── FINISH PAGE ───────────────────────────────────────────────────────────────
 def page_finish():
@@ -856,11 +973,14 @@ def page_finish():
         </div>
     </div>""", unsafe_allow_html=True)
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("🏆 View Full Leaderboard", use_container_width=True):
-            st.session_state["page"] = "leaderboard"; st.rerun()
+        if st.button("🏠 Home", use_container_width=True):
+            st.session_state["page"] = "home"; st.rerun()
     with c2:
+        if st.button("🏆 Leaderboard", use_container_width=True):
+            st.session_state["page"] = "leaderboard"; st.rerun()
+    with c3:
         if st.button("🔄 Play Again (new questions)", use_container_width=True):
             name = st.session_state.get("player_name", "")
             team = st.session_state.get("player_team", "")
@@ -872,7 +992,7 @@ def page_finish():
                 "page": "game", "stage": 1,
                 "start_time": now, "stage_start_time": now,
             })
-            setup_question_banks()
+            setup_question_banks(force=True)
             st.rerun()
 
 # ── LEADERBOARD PAGE ──────────────────────────────────────────────────────────
