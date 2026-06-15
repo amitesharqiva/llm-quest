@@ -1,5 +1,7 @@
 import streamlit as st
 import json, os, time, re, random
+import gspread
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(
     page_title="AI Quest · Arqiva Live 2026",
@@ -518,28 +520,32 @@ def end_stage(n):
     st.session_state["stage_start_time"] = time.time()
 
 # ── LEADERBOARD ───────────────────────────────────────────────────────────────
-LB_FILE = "/tmp/arqiva_quest_2026.json"
+_SHEET_COLS = ["name", "team", "score", "time", "stages", "plays"]
 
 @st.cache_resource
-def _get_store():
-    """
-    Shared in-memory leaderboard — one instance across ALL concurrent sessions.
-    Loaded from disk on first call so data survives app restarts.
-    st.cache_resource is thread-safe for concurrent users.
-    """
-    data = {"board": []}
-    try:
-        if os.path.exists(LB_FILE):
-            data["board"] = json.loads(open(LB_FILE).read())
-    except Exception:
-        pass
-    return data
+def _get_sheet():
+    """Single shared gspread worksheet — persists across all Streamlit sessions."""
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=[
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ],
+    )
+    gc = gspread.authorize(creds)
+    sh = gc.open(st.secrets["SHEET_NAME"]).sheet1
+    # Write header row if the sheet is empty
+    if not sh.row_values(1):
+        sh.append_row(_SHEET_COLS)
+    return sh
 
-def _flush(board):
+def lb_load():
     try:
-        open(LB_FILE, "w").write(json.dumps(board))
+        rows = _get_sheet().get_all_records()
+        rows.sort(key=lambda x: (-int(x.get("score", 0)), int(x.get("time", 0))))
+        return rows[:50]
     except Exception:
-        pass
+        return []
 
 def lb_save():
     name  = st.session_state.get("player_name", "?")
@@ -547,22 +553,20 @@ def lb_save():
     t     = int(time.time() - (st.session_state.get("start_time") or time.time()))
     done  = sum(1 for v in st.session_state.get("stage_complete", {}).values() if v)
     team  = st.session_state.get("player_team", "")
-    store = _get_store()
-    board = store["board"]
-    ex = next((e for e in board if e["name"].lower() == name.lower()), None)
-    if ex:
-        ex["plays"] = ex.get("plays", 1) + 1
-        if score >= ex["score"]:
-            ex.update({"score": score, "time": t, "stages": done, "team": team})
-    else:
-        board.append({"name": name, "team": team, "score": score,
-                      "time": t, "stages": done, "plays": 1})
-    board.sort(key=lambda x: (-x["score"], x["time"]))
-    store["board"] = board[:50]
-    _flush(store["board"])
-
-def lb_load():
-    return _get_store()["board"]
+    try:
+        sh   = _get_sheet()
+        rows = sh.get_all_records()
+        for i, row in enumerate(rows, start=2):   # row 1 is the header
+            if row["name"].lower() == name.lower():
+                plays = int(row.get("plays", 1)) + 1
+                if score >= int(row.get("score", 0)):
+                    sh.update(f"A{i}:F{i}", [[name, team, score, t, done, plays]])
+                else:
+                    sh.update(f"F{i}", [[plays]])
+                return
+        sh.append_row([name, team, score, t, done, 1])
+    except Exception as e:
+        st.warning(f"Leaderboard could not be saved: {e}")
 
 def my_rank():
     for i, e in enumerate(lb_load()):
